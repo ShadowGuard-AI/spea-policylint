@@ -69,7 +69,6 @@ def load_policy(policy_file, format="yaml"):
     """
     try:
         with open(policy_file, "r") as f:
-            # The format comes from the flag, never from the file name, and the default is yaml. That default quietly covers most JSON policies too, since JSON is close enough to YAML for safe_load to read it, while a YAML policy linted with the json flag fails outright.
             if format == "yaml":
                 try:
                     policy = yaml.safe_load(f)
@@ -85,7 +84,6 @@ def load_policy(policy_file, format="yaml"):
             else:
                 raise ValueError("Invalid format. Must be 'yaml' or 'json'.")
 
-        # I reject a non mapping policy before the schema ever sees it. A schema written to accept a top level list can therefore never pass through my loader, which makes the dict shape a rule of this tool rather than of the operator's schema.
         if not isinstance(policy, dict):
              raise ValueError("Policy file must contain a dictionary.")
 
@@ -144,12 +142,36 @@ def validate_policy(policy, schema):
         jsonschema.ValidationError: If the policy is invalid according to the schema.
     """
     try:
-        # jsonschema stops at the first error it reports through this call, so a policy with five problems shows one per run. The schema itself is never checked for validity either: a malformed schema raises SchemaError, which validate_policy does not catch, and the run ends in main's generic handler.
         validate(instance=policy, schema=schema)
         logging.info("Policy validation successful.")
     except ValidationError as e:
         logging.error(f"Policy validation failed: {e}")
         raise
+
+
+
+def lint_policy(policy):
+    """Built in checks computed from the policy itself. Returns (findings, checks_run)."""
+    findings = []
+    checks = 0
+    checks += 1
+    if policy.get("allow_all") is True and policy.get("deny_all") is True:
+        findings.append("Contradiction: policy sets both allow_all and deny_all to true.")
+    # contradiction between allow/deny lists sharing an entry
+    allow_list = policy.get("allow") or policy.get("allowed") or []
+    deny_list = policy.get("deny") or policy.get("denied") or []
+    if isinstance(allow_list, list) and isinstance(deny_list, list):
+        checks += 1
+        overlap = sorted(set(str(x) for x in allow_list) & set(str(x) for x in deny_list))
+        for item in overlap:
+            findings.append(f"Contradiction: '{item}' appears in both the allow and deny lists.")
+    # invalid value checks for known boolean switches
+    for key in ("allow_all", "deny_all"):
+        if key in policy:
+            checks += 1
+            if not isinstance(policy[key], bool):
+                findings.append(f"Invalid value: '{key}' must be a boolean, got {type(policy[key]).__name__}.")
+    return findings, checks
 
 
 def main():
@@ -164,8 +186,23 @@ def main():
     try:
         policy = load_policy(args.policy_file, args.format)
         schema = load_schema(args.schema_file)
-        validate_policy(policy, schema)
-        # Every failure path in main exits 1 with a different printed reason, but the underlying detail stays in the log stream only. A wrapper that captures just stdout learns which family failed and nothing about the field or rule involved.
+        if not policy:
+            print("Nothing to lint: the policy is empty, so no checks ran.")
+            sys.exit(2)
+        if not isinstance(schema, dict) or not schema:
+            # An empty schema still allows the built in checks to run.
+            schema = {}
+        findings, checks = lint_policy(policy)
+        schema_checked = bool(schema)
+        if schema_checked:
+            validate_policy(policy, schema)
+        if findings:
+            for finding in findings:
+                print(f"Lint finding: {finding}")
+            sys.exit(1)
+        if checks == 0 and not schema_checked:
+            print("Nothing to lint: no checks ran.")
+            sys.exit(2)
         print("Policy validation successful.")
 
     except FileNotFoundError:
