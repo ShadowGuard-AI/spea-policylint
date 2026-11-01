@@ -69,6 +69,7 @@ def load_policy(policy_file, format="yaml"):
     """
     try:
         with open(policy_file, "r") as f:
+            # The format comes from the flag, never from the file name, and the default is yaml. That default quietly covers most JSON policies too, since JSON is close enough to YAML for safe_load to read it, while a YAML policy linted with the json flag fails outright.
             if format == "yaml":
                 try:
                     policy = yaml.safe_load(f)
@@ -84,6 +85,7 @@ def load_policy(policy_file, format="yaml"):
             else:
                 raise ValueError("Invalid format. Must be 'yaml' or 'json'.")
 
+        # I reject a non mapping policy before the schema ever sees it. A schema written to accept a top level list can therefore never pass through my loader, which makes the dict shape a rule of this tool rather than of the operator's schema.
         if not isinstance(policy, dict):
              raise ValueError("Policy file must contain a dictionary.")
 
@@ -142,6 +144,7 @@ def validate_policy(policy, schema):
         jsonschema.ValidationError: If the policy is invalid according to the schema.
     """
     try:
+        # jsonschema stops at the first error it reports through this call, so a policy with five problems shows one per run. The schema itself is never checked for validity either: a malformed schema raises SchemaError, which validate_policy does not catch, and the run ends in main's generic handler.
         validate(instance=policy, schema=schema)
         logging.info("Policy validation successful.")
     except ValidationError as e:
@@ -162,6 +165,7 @@ def main():
         policy = load_policy(args.policy_file, args.format)
         schema = load_schema(args.schema_file)
         validate_policy(policy, schema)
+        # Every failure path in main exits 1 with a different printed reason, but the underlying detail stays in the log stream only. A wrapper that captures just stdout learns which family failed and nothing about the field or rule involved.
         print("Policy validation successful.")
 
     except FileNotFoundError:
